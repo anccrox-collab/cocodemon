@@ -2,48 +2,45 @@ import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
+import jsPDF from 'jspdf'
 import './VoiceAssistant.css'
 
 const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
   const [isListening, setIsListening] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [conversation, setConversation] = useState([])
-  const [currentStep, setCurrentStep] = useState('greeting')
-  const currentStepRef = useRef(currentStep)
+  const [currentStep, setCurrentStep] = useState('idle')
   const [formData, setFormData] = useState({})
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0)
-  const currentFieldIndexRef = useRef(currentFieldIndex)
-  const [language, setLanguage] = useState('en') // 'en' or 'hi'
+  const [waitingForConfirmation, setWaitingForConfirmation] = useState(false)
   const recognitionRef = useRef(null)
   const audioRef = useRef(null)
+  const suppressRecognitionRef = useRef(false)
   const navigate = useNavigate()
 
-  const ONDEMAND_API_KEY ='cJP3spu2jknHr9XWzGEatDgKH3F4u2pL'
+  const ONDEMAND_API_KEY = 'cJP3spu2jknHr9XWzGEatDgKH3F4u2pL'
   const TTS_API_URL = 'https://api.on-demand.io/services/v1/public/service/execute/text_to_speech'
 
-  // Income Certificate fields
-  const incomeFields = [
-    { key: 'name', en: 'Full Name', hi: 'पूरा नाम' },
-    { key: 'fatherName', en: "Father's Name", hi: 'पिता का नाम' },
-    { key: 'dateOfBirth', en: 'Date of Birth', hi: 'जन्म तिथि' },
-    { key: 'address', en: 'Address', hi: 'पता' },
-    { key: 'annualIncome', en: 'Annual Income', hi: 'वार्षिक आय' },
-    { key: 'occupation', en: 'Occupation', hi: 'व्यवसाय' },
-    { key: 'panNumber', en: 'PAN Number', hi: 'PAN नंबर' }
+  const formFields = [
+    { key: 'Full Name', label: 'Full Name', prompt: 'What is your full name?' },
+    { key: "Father's Name", label: "Father's Name", prompt: "What is your father's name?" },
+    { key: 'Date of Birth', label: 'Date of Birth', prompt: 'What is your date of birth? Please say it in day, month, year format.' },
+    { key: 'Address', label: 'Address', prompt: 'What is your complete address?' },
+    { key: 'Annual Income', label: 'Annual Income', prompt: 'What is your annual income?' },
+    { key: 'Occupation', label: 'Occupation', prompt: 'What is your occupation?' },
+    { key: 'PAN Number', label: 'PAN Number', prompt: 'What is your PAN number?' }
   ]
 
-  // Initialize speech recognition
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       recognitionRef.current = new SpeechRecognition()
       recognitionRef.current.continuous = false
       recognitionRef.current.interimResults = false
-      recognitionRef.current.lang = 'en-US,hi-IN'
+      recognitionRef.current.lang = 'en-US'
 
       recognitionRef.current.onresult = (event) => {
         const transcript = event.results[0][0].transcript
-        // Ignore recognition results if we deliberately suppressed recognition
         if (suppressRecognitionRef.current) return
         handleUserInput(transcript)
       }
@@ -51,10 +48,7 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
       recognitionRef.current.onerror = (event) => {
         console.error('Speech recognition error:', event.error)
         setIsListening(false)
-        const errorMsg = language === 'hi'
-          ? "क्षमा करें, मैं आपको सुन नहीं पाई। कृपया फिर से कोशिश करें।"
-          : "Sorry, I couldn't hear you. Please try again."
-        speakText(errorMsg)
+        speakText("Sorry, I couldn't hear you clearly. Please try again.")
       }
 
       recognitionRef.current.onend = () => {
@@ -71,41 +65,20 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
         audioRef.current = null
       }
     }
-  }, [language])
+  }, [])
 
-  // Suppress recognition while assistant is speaking to avoid echo
-  const suppressRecognitionRef = useRef(false)
-
-  // Start conversation when component becomes active
   useEffect(() => {
-    if (isActive && currentStep === 'greeting' && conversation.length === 0) {
+    if (isActive && currentStep === 'idle' && conversation.length === 0) {
       startConversation()
     }
   }, [isActive])
 
-  // Keep a ref in sync with currentStep to avoid stale closures
-  useEffect(() => {
-    currentStepRef.current = currentStep
-  }, [currentStep])
-
-  // Keep ref in sync with currentFieldIndex
-  useEffect(() => {
-    currentFieldIndexRef.current = currentFieldIndex
-  }, [currentFieldIndex])
-
-  // Detect if input is in Hindi
-  const isHindiInput = (text) => {
-    return /[\u0900-\u097F]/.test(text)
-  }
-
-  // Text to Speech using OnDemand API
   const speakText = async (text) => {
     if (!text) return
 
     setIsSpeaking(true)
     addToConversation('assistant', text)
 
-    // Stop recognition and suppress results while assistant speaks
     try {
       if (recognitionRef.current && typeof recognitionRef.current.stop === 'function') {
         suppressRecognitionRef.current = true
@@ -136,7 +109,6 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
         audioRef.current = audio
         audio.onended = () => {
           setIsSpeaking(false)
-          // re-enable recognition after assistant finishes
           suppressRecognitionRef.current = false
         }
         audio.onerror = () => {
@@ -153,24 +125,25 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
     }
   }
 
-  // Fallback to browser TTS
   const fallbackTTS = (text) => {
     if ('speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = language === 'hi' ? 'hi-IN' : 'en-US'
-      utterance.voice = speechSynthesis.getVoices().find(voice =>
-        (language === 'hi' && voice.lang.includes('hi')) ||
-        (language === 'en' && (voice.name.includes('Female') || voice.name.includes('Zira')))
-      ) || speechSynthesis.getVoices()[0]
-      utterance.onend = () => setIsSpeaking(false)
-      utterance.onerror = () => setIsSpeaking(false)
+      utterance.lang = 'en-US'
+      utterance.onend = () => {
+        setIsSpeaking(false)
+        suppressRecognitionRef.current = false
+      }
+      utterance.onerror = () => {
+        setIsSpeaking(false)
+        suppressRecognitionRef.current = false
+      }
       speechSynthesis.speak(utterance)
     } else {
       setIsSpeaking(false)
+      suppressRecognitionRef.current = false
     }
   }
 
-  // Start listening for user input
   const startListening = () => {
     if (isSpeaking) {
       if (audioRef.current) {
@@ -185,151 +158,121 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
 
     if (recognitionRef.current && !isListening) {
       setIsListening(true)
-      recognitionRef.current.lang = language === 'hi' ? 'hi-IN' : 'en-US'
-      // If we recently suppressed recognition, clear that flag and start
       suppressRecognitionRef.current = false
       recognitionRef.current.start()
     }
   }
 
-  // Handle user input
   const handleUserInput = (userText) => {
     addToConversation('user', userText)
-
-    // Detect language and set it
-    if (isHindiInput(userText)) {
-      setLanguage('hi')
-    }
-
     processCommand(userText.trim())
   }
 
-  // Process user commands
   const processCommand = (command) => {
     const lowerCommand = command.toLowerCase()
 
-    // Check if we're filling the form
-    if (currentStepRef.current === 'fillingForm') {
-      handleFormInput(command)
+    if (waitingForConfirmation) {
+      handleConfirmation(command)
       return
     }
 
-    // Detect income certificate requests
-    if (lowerCommand.includes('income') || lowerCommand.includes('income tax') ||
-      lowerCommand.includes('income certificate') || lowerCommand.includes('आय') ||
-      lowerCommand.includes('इनकम')) {
-      // Ensure we only start the form if not already filling it
-      if (currentStepRef.current !== 'fillingForm') startIncomeForm()
+    if (currentStep === 'collecting') {
+      handleFieldInput(command)
       return
     }
 
-    // Help or intro
-    if (lowerCommand.includes('help') || lowerCommand.includes('what') ||
-      lowerCommand.includes('क्या') || lowerCommand.includes('मदद')) {
-      const helpMsg = language === 'hi'
-        ? "मैं आपकी आवाज सहायक हूं। मैं आय प्रमाणपत्र फॉर्म भरने में आपकी मदद कर सकती हूं। 'आय प्रमाणपत्र' या 'income certificate' कहें।"
-        : "I'm your voice assistant. I can help you fill out an income certificate form. Just say 'income certificate' to get started."
-      speakText(helpMsg)
+    if (lowerCommand.includes('income') ||
+        lowerCommand.includes('certificate') ||
+        lowerCommand.includes('start') ||
+        lowerCommand.includes('begin') ||
+        lowerCommand.includes('fill') ||
+        lowerCommand.includes('form')) {
+      startFormFilling()
       return
     }
 
-    // Default greeting response
-    const defaultMsg = language === 'hi'
-      ? "नमस्ते! मैं आपकी आवाज सहायक हूं। आय प्रमाणपत्र फॉर्म भरने के लिए 'आय प्रमाणपत्र' कहें।"
-      : "Hello! I'm your voice assistant. Say 'income certificate' to fill out an income certificate form."
-    speakText(defaultMsg)
-  }
-
-  // Start conversation
-  const startConversation = () => {
-    const greeting = language === 'hi'
-      ? "नमस्ते! मैं आपकी आवाज सहायक हूं। मैं आय प्रमाणपत्र फॉर्म भरने में आपकी मदद कर सकती हूं। 'आय प्रमाणपत्र' कहें।"
-      : "Hello! I'm your voice assistant. I can help you fill out an income certificate form. Just say 'income certificate' to get started."
+    const greeting = "Hello! I'm your voice assistant. I can help you fill out an Income Certificate form. Say 'start' or 'income certificate' to begin."
     speakText(greeting)
   }
 
-  // Start income form filling
-  const startIncomeForm = () => {
+  const startConversation = () => {
+    const greeting = "Hello! I'm your voice assistant. I can help you fill out an Income Certificate form. Say 'start' to begin filling the form."
+    speakText(greeting)
+  }
+
+  const startFormFilling = () => {
     navigate('/govt-affidavits')
-    setCurrentStep('fillingForm')
-    currentStepRef.current = 'fillingForm'
+    setCurrentStep('collecting')
     setCurrentFieldIndex(0)
-    currentFieldIndexRef.current = 0
     setFormData({})
 
     setTimeout(() => {
-      // Trigger form selection
       window.dispatchEvent(new CustomEvent('selectAffidavit', {
         detail: {
           id: 'income',
           name: 'Income Certificate Affidavit',
-          fields: incomeFields.map(f => f.en)
+          fields: formFields.map(f => f.label)
         }
       }))
 
-      // Ask first question
-      const firstField = incomeFields[0]
-      const question = language === 'hi'
-        ? `बढ़िया! आय प्रमाणपत्र फॉर्म भरना शुरू करते हैं। ${firstField.hi} क्या है?`
-        : `Great! Let's fill out the income certificate form. What is your ${firstField.en.toLowerCase()}?`
-      speakText(question)
+      const firstPrompt = `Great! Let's start filling the Income Certificate form. ${formFields[0].prompt}`
+      speakText(firstPrompt)
     }, 800)
   }
 
-  // Handle form input
-  const handleFormInput = (input) => {
-    const idx = currentFieldIndexRef.current
-    if (idx >= incomeFields.length) {
-      // All fields filled
-      generatePDF()
-      return
+  const handleFieldInput = (input) => {
+    if (currentFieldIndex >= formFields.length) return
+
+    const currentField = formFields[currentFieldIndex]
+    const newFormData = {
+      ...formData,
+      [currentField.key]: input
     }
-    const currentField = incomeFields[idx]
-    const newFormData = { ...formData, [currentField.key]: input }
+
     setFormData(newFormData)
 
-    // Update parent if callback provided
     if (onFormDataUpdate) {
       onFormDataUpdate(newFormData)
-      // Also emit a global event so parent listeners can react if not passed
-      try {
-        window.dispatchEvent(new CustomEvent('voiceFormUpdated', { detail: newFormData }))
-      } catch (e) {
-        // ignore
-      }
     }
 
-    const nextIndex = currentFieldIndex + 1
+    window.dispatchEvent(new CustomEvent('voiceFormUpdated', { detail: newFormData }))
 
-    const updatedNext = idx + 1
-    if (updatedNext >= incomeFields.length) {
-      // All fields filled
-      const completeMsg = language === 'hi'
-        ? "बढ़िया! मेरे पास सभी जानकारी है। अब मैं आपका PDF बनाती हूं।"
-        : "Perfect! I have all the information. Let me generate your PDF now."
-      speakText(completeMsg)
-      setTimeout(() => {
-        generatePDF()
-      }, 1500)
+    const nextIndex = currentFieldIndex + 1
+    setCurrentFieldIndex(nextIndex)
+
+    if (nextIndex >= formFields.length) {
+      setWaitingForConfirmation(true)
+      const confirmMsg = "Perfect! I have collected all the information. Would you like me to generate the PDF now? Please say yes or no."
+      speakText(confirmMsg)
     } else {
-      // Ask next question
-      const nextField = incomeFields[nextIndex]
-      const question = language === 'hi'
-        ? `${nextField.hi} क्या है?`
-        : `What is your ${nextField.en.toLowerCase()}?`
-      // advance index using functional update and ref
-      setCurrentFieldIndex(prev => {
-        const nv = prev + 1
-        currentFieldIndexRef.current = nv
-        return nv
-      })
-      speakText(question)
+      const nextField = formFields[nextIndex]
+      speakText(nextField.prompt)
     }
   }
 
-  // Generate PDF
+  const handleConfirmation = (command) => {
+    const lowerCommand = command.toLowerCase()
+
+    if (lowerCommand.includes('yes') || lowerCommand.includes('sure') ||
+        lowerCommand.includes('ok') || lowerCommand.includes('generate') ||
+        lowerCommand.includes('please')) {
+      setWaitingForConfirmation(false)
+      generatePDF()
+    } else if (lowerCommand.includes('no') || lowerCommand.includes('cancel')) {
+      setWaitingForConfirmation(false)
+      setCurrentStep('idle')
+      setFormData({})
+      setCurrentFieldIndex(0)
+      speakText("Okay, the form has been cancelled. You can start over anytime by saying 'start'.")
+    } else {
+      speakText("I didn't understand. Please say yes to generate the PDF, or no to cancel.")
+    }
+  }
+
   const generatePDF = () => {
-    import('jspdf').then(({ default: jsPDF }) => {
+    speakText("Generating your PDF now. Please wait...")
+
+    setTimeout(() => {
       const doc = new jsPDF()
 
       doc.setFontSize(20)
@@ -338,28 +281,28 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
       doc.setFontSize(12)
       let yPos = 40
 
-      const name = formData.name || 'N/A'
-      const fatherName = formData.fatherName || 'N/A'
-      const address = formData.address || 'N/A'
+      const name = formData['Full Name'] || 'N/A'
+      const fatherName = formData["Father's Name"] || 'N/A'
+      const address = formData['Address'] || 'N/A'
 
       doc.text(`I, ${name}, son/daughter of ${fatherName},`, 20, yPos)
       yPos += 10
+      doc.text(`residing at ${address},`, 20, yPos)
+      yPos += 10
       doc.text(`hereby solemnly affirm and declare as under:`, 20, yPos)
       yPos += 15
-      doc.text(`1. That I am a resident of ${address}.`, 20, yPos)
-      yPos += 10
-      doc.text(`2. That the information provided by me is true and correct.`, 20, yPos)
-      yPos += 15
 
-      incomeFields.forEach((field, index) => {
+      formFields.forEach((field, index) => {
         if (formData[field.key]) {
-          doc.text(`${index + 3}. ${field.en}: ${formData[field.key]}`, 20, yPos)
+          doc.text(`${index + 1}. ${field.label}: ${formData[field.key]}`, 20, yPos)
           yPos += 10
         }
       })
 
       yPos += 10
-      doc.text(`I hereby declare that the above statements are true and correct.`, 20, yPos)
+      doc.text(`I hereby declare that the above statements are true and correct`, 20, yPos)
+      yPos += 5
+      doc.text(`to the best of my knowledge and belief.`, 20, yPos)
       yPos += 20
       doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, yPos)
       yPos += 10
@@ -367,19 +310,15 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
 
       doc.save('Income_Certificate_Affidavit.pdf')
 
-      setCurrentStep('greeting')
-      currentStepRef.current = 'greeting'
+      setCurrentStep('idle')
       setFormData({})
       setCurrentFieldIndex(0)
 
-      const successMsg = language === 'hi'
-        ? "आपका PDF बन गया है और डाउनलोड हो गया है! क्या आप कुछ और चाहते हैं?"
-        : "Your PDF has been generated and downloaded! Is there anything else you need?"
+      const successMsg = "Your PDF has been generated and downloaded successfully! Is there anything else I can help you with? You can say 'start' to fill another form."
       speakText(successMsg)
-    })
+    }, 1000)
   }
 
-  // Add message to conversation
   const addToConversation = (role, text) => {
     setConversation(prev => [...prev, { role, text, timestamp: new Date() }])
   }
@@ -425,12 +364,12 @@ const VoiceAssistant = ({ onFormDataUpdate, isActive, onClose }) => {
             {isListening ? (
               <>
                 <span className="pulse-ring"></span>
-                <span>{language === 'hi' ? 'सुन रही हूं...' : 'Listening...'}</span>
+                <span>Listening...</span>
               </>
             ) : isSpeaking ? (
-              language === 'hi' ? 'बोल रही हूं...' : 'Speaking...'
+              'Speaking...'
             ) : (
-              language === 'hi' ? '🎤 बोलने के लिए टैप करें' : '🎤 Tap to Speak'
+              'Tap to Speak'
             )}
           </motion.button>
         </div>
